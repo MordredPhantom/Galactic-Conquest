@@ -32,6 +32,30 @@ import {
   Swords
 } from 'lucide-react';
 
+const RAW_SERVER_URI = ((import.meta as { env?: Record<string, string | undefined> }).env?.VITE_SERVER_URI ?? '').trim();
+
+const getWebSocketServerUrl = () => {
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+
+  if (!RAW_SERVER_URI) {
+    return `${wsProtocol}//${window.location.host}`;
+  }
+
+  if (RAW_SERVER_URI.startsWith('ws://') || RAW_SERVER_URI.startsWith('wss://')) {
+    return RAW_SERVER_URI;
+  }
+
+  if (RAW_SERVER_URI.startsWith('http://') || RAW_SERVER_URI.startsWith('https://')) {
+    return RAW_SERVER_URI.replace(/^http/i, 'ws');
+  }
+
+  if (RAW_SERVER_URI.startsWith('//')) {
+    return `${wsProtocol}${RAW_SERVER_URI}`;
+  }
+
+  return `${wsProtocol}//${RAW_SERVER_URI}`;
+};
+
 export default function App() {
   // Websocket state
   const [socket, setSocket] = useState<WebSocket | null>(null);
@@ -112,8 +136,7 @@ export default function App() {
 
   // Initialize Websocket Connection
   useEffect(() => {
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${wsProtocol}//${window.location.host}`;
+    const wsUrl = getWebSocketServerUrl();
     
     let ws: WebSocket;
     let reconnectTimeout: NodeJS.Timeout;
