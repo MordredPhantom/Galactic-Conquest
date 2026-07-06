@@ -1,0 +1,8 @@
+{
+  "name": "Multiplayer Planet Conquest",
+  "description": "A real-time multiplayer space strategy game where players colonize planets, grow fleets, coordinate attacks, unlock system upgrade trees, and challenge bots.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
