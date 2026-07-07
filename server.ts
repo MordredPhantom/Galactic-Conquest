@@ -165,23 +165,37 @@ function generatePlanetMap(players: Player[], mapWidth = 850, mapHeight = 550, m
   const minorFactionPlayers = players.filter((p) => p.isMinorFaction);
 
   for (let i = 0; i < numNeutral; i++) {
+    const type = planetTypes[Math.floor(Math.random() * planetTypes.length)];
+    const size = 25 + Math.floor(Math.random() * 20); // sizes 25 to 45
+
     // Generate coordinate checking for overlaps
     let x = 0;
     let y = 0;
     let attempts = 0;
     let tooClose = true;
 
-    while (tooClose && attempts < 100) {
-      x = 80 + Math.floor(Math.random() * (mapWidth - 160));
-      y = 80 + Math.floor(Math.random() * (mapHeight - 160));
+    while (tooClose && attempts < 150) {
+      x = 65 + Math.floor(Math.random() * (mapWidth - 130));
+      y = 65 + Math.floor(Math.random() * (mapHeight - 130));
       tooClose = false;
 
-      // Check distance from all existing planets (keep min distance based on size)
+      // Relax target spacing dynamically for high densities, but NEVER let them overlap physically
+      const currentMinDistance = Math.max(
+        attempts > 100 ? minDistance * 0.5 :
+        attempts > 60 ? minDistance * 0.65 :
+        attempts > 30 ? minDistance * 0.8 : minDistance,
+        (size + 48) * 0.5 + 24 // absolute lower boundary to prevent visual rim overlaps
+      );
+
+      // Check distance from all existing planets
       for (const p of planets) {
         const dx = p.x - x;
         const dy = p.y - y;
         const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < minDistance) {
+        
+        // Visual physical clearance check (sum of radii + 22px spacer)
+        const clearanceLimit = (size + p.size) * 0.5 + 22;
+        if (dist < Math.max(currentMinDistance, clearanceLimit)) {
           tooClose = true;
           break;
         }
@@ -189,8 +203,11 @@ function generatePlanetMap(players: Player[], mapWidth = 850, mapHeight = 550, m
       attempts++;
     }
 
-    const type = planetTypes[Math.floor(Math.random() * planetTypes.length)];
-    const size = 25 + Math.floor(Math.random() * 20); // sizes 25 to 45
+    // Skip placing this neutral planet if we absolutely couldn't find a non-overlapping spot
+    if (tooClose) {
+      continue;
+    }
+
     let maxShips = size * 3;
     let growthRate = size * 0.025;
     let defenseBonus = 1.0;
@@ -296,12 +313,46 @@ setInterval(() => {
 
     let stateChanged = false;
 
-    // Clean up expired laser effects
+    // Process active laser impacts & Clean up expired laser effects
     if (lobby.activeLasers && lobby.activeLasers.length > 0) {
       const now = Date.now();
+      let lasersChanged = false;
+
+      lobby.activeLasers.forEach((eff) => {
+        // Apply damage/vaporization precisely at the impact delay
+        if (!eff.impactProcessed && now - eff.firedAt >= (eff.impactDelay || 1000)) {
+          eff.impactProcessed = true;
+          lasersChanged = true;
+          stateChanged = true;
+
+          const toPlanet = lobby.planets.find((p) => p.id === eff.toPlanetId);
+          const fromPlanet = lobby.planets.find((p) => p.id === eff.fromPlanetId);
+          const firingPlayer = lobby.players.find((p) => p.id === eff.firingPlayerId);
+
+          if (toPlanet) {
+            if (eff.type === 'breaker') {
+              // Completely remove vaporized planet from array!
+              lobby.planets = lobby.planets.filter((p) => p.id !== toPlanet.id);
+              addSystemMessage(lobby, `🔥 PLANETARY CATACLYSM: The Planet Breaker beam reached ${toPlanet.name} and VAPORIZED IT FULLY! The system has been removed from the map!`);
+            } else {
+              const isShieldBlocked = toPlanet.hasShield && toPlanet.shieldActive && (toPlanet.shieldCooldownUntil || 0) < now;
+              if (isShieldBlocked) {
+                toPlanet.shieldActive = false;
+                toPlanet.shieldCooldownUntil = now + 35000; // 35s shield cooldown
+                addSystemMessage(lobby, `🛡️ DEFLECTORS ENGAGED: A laser blast from ${fromPlanet ? fromPlanet.name : 'Unknown System'} reached ${toPlanet.name} and was absorbed by its Deflector Shield! Deflectors are now offline.`);
+              } else {
+                const dmg = eff.damage || 75;
+                toPlanet.ships = Math.max(0, toPlanet.ships - dmg);
+                addSystemMessage(lobby, `💥 TACTICAL IMPACT: A laser blast from ${fromPlanet ? fromPlanet.name : 'Unknown System'} hit ${toPlanet.name}, destroying ${dmg} defending ships!`);
+              }
+            }
+          }
+        }
+      });
+
       const prevLen = lobby.activeLasers.length;
       lobby.activeLasers = lobby.activeLasers.filter((eff) => now - eff.firedAt < eff.duration);
-      if (lobby.activeLasers.length !== prevLen) {
+      if (lobby.activeLasers.length !== prevLen || lasersChanged) {
         stateChanged = true;
       }
     }
@@ -519,6 +570,12 @@ setInterval(() => {
 
       const fromPlanet = lobby.planets.find((p) => p.id === fleet.fromPlanetId);
       const toPlanet = lobby.planets.find((p) => p.id === fleet.toPlanetId);
+
+      if (!fromPlanet || !toPlanet) {
+        fleetsToRemove.add(fleet.id);
+        stateChanged = true;
+        return;
+      }
 
       if (fromPlanet && toPlanet) {
         // If they are in mid-air combat, they don't move
@@ -874,12 +931,16 @@ setInterval(() => {
           const cooldown = lvl === 1 ? 15000 : lvl === 2 ? 10000 : 25000;
           const lastFired = bp.laserLastFired || 0;
           const now = Date.now();
-          const shotCost = lvl === 3 ? (4000 + (bp.planetBreakerUses || 0) * 2000) : 1000;
 
-          if (now - lastFired > cooldown && bot.credits >= shotCost) {
-            // Target an enemy planet
-            const targetPlanet = otherPlanets.find((tp) => tp.ownerId !== bot.id && !tp.isDestroyed && tp.ownerId !== null);
-            if (targetPlanet) {
+          // Decide shot type and cost for Level 3
+          // Bot prefers Planet Breaker if target planet has high defenses or high ships
+          const targetPlanet = otherPlanets.find((tp) => tp.ownerId !== bot.id && !tp.isDestroyed && tp.ownerId !== null);
+          
+          if (targetPlanet) {
+            const isBreakerChoice = lvl === 3 && (Math.random() < 0.35 || targetPlanet.ships > 100);
+            const shotCost = isBreakerChoice ? 3000 : 1000;
+
+            if (now - lastFired > cooldown && bot.credits >= shotCost) {
               bot.credits -= shotCost;
               bp.laserLastFired = now;
 
@@ -887,47 +948,61 @@ setInterval(() => {
                 lobby.activeLasers = [];
               }
 
-              if (lvl === 3) {
-                // Planet Breaker!
+              // Distance-based delay calculation
+              const dx = targetPlanet.x - bp.x;
+              const dy = targetPlanet.y - bp.y;
+              const distance = Math.sqrt(dx * dx + dy * dy);
+              const travelSpeed = 250;
+              const impactDelay = Math.max(500, Math.min(3000, (distance / travelSpeed) * 1000));
+
+              if (isBreakerChoice) {
                 bp.planetBreakerUses = (bp.planetBreakerUses || 0) + 1;
-                targetPlanet.isDestroyed = true;
-                targetPlanet.ships = 0;
-                targetPlanet.ownerId = null;
-                addSystemMessage(lobby, `🔥 PLANET BREAKER ACTIVATED! Bot ${bot.name} fired the Planet Breaker from ${bp.name} and VAPORIZED ${targetPlanet.name}!`);
+                addSystemMessage(lobby, `🔥 PLANET BREAKER ACTIVATED: Bot ${bot.name} launched a Planet Breaker projectile from ${bp.name} targeting ${targetPlanet.name}! Impact in ${(impactDelay / 1000).toFixed(1)}s!`);
 
                 lobby.activeLasers.push({
                   id: `laser-${Date.now()}-${Math.random()}`,
                   fromPlanetId: bp.id,
                   toPlanetId: targetPlanet.id,
                   firedAt: now,
-                  duration: 4500, // 4.5 seconds of dramatic animation!
+                  duration: 4500,
                   type: 'breaker',
                   color: bot.color,
-                  isShieldBlocked: false
+                  isShieldBlocked: false,
+                  impactDelay: impactDelay,
+                  damage: 0,
+                  impactProcessed: false,
+                  firingPlayerId: bot.id,
+                  fromX: bp.x,
+                  fromY: bp.y,
+                  fromSize: bp.size,
+                  toX: targetPlanet.x,
+                  toY: targetPlanet.y,
+                  toSize: targetPlanet.size
                 });
               } else {
-                // Standard laser
-                const dmg = lvl === 1 ? 75 : 135;
+                const dmg = lvl === 1 ? 75 : lvl === 2 ? 135 : 175;
                 const isShieldBlocked = targetPlanet.hasShield && targetPlanet.shieldActive && (targetPlanet.shieldCooldownUntil || 0) < now;
-
-                if (isShieldBlocked) {
-                  targetPlanet.shieldActive = false;
-                  targetPlanet.shieldCooldownUntil = now + 35000;
-                  addSystemMessage(lobby, `🛡️ SHIELD ABSORBED: Bot ${bot.name}'s laser blast from ${bp.name} was fully blocked by ${targetPlanet.name}'s Deflector Shield!`);
-                } else {
-                  targetPlanet.ships = Math.max(0, targetPlanet.ships - dmg);
-                  addSystemMessage(lobby, `💥 DIRECT HIT: Bot ${bot.name} fired a laser from ${bp.name} at ${targetPlanet.name}, destroying ${dmg} defending ships!`);
-                }
+                addSystemMessage(lobby, `📡 LASER LAUNCHED: Bot ${bot.name} fired a tactical laser from ${bp.name} targeting ${targetPlanet.name}! Impact in ${(impactDelay / 1000).toFixed(1)}s!`);
 
                 lobby.activeLasers.push({
                   id: `laser-${Date.now()}-${Math.random()}`,
                   fromPlanetId: bp.id,
                   toPlanetId: targetPlanet.id,
                   firedAt: now,
-                  duration: 2500, // 2.5 seconds to easily read and see!
+                  duration: 2500,
                   type: 'standard',
                   color: bot.color,
-                  isShieldBlocked: isShieldBlocked
+                  isShieldBlocked: isShieldBlocked,
+                  impactDelay: impactDelay,
+                  damage: dmg,
+                  impactProcessed: false,
+                  firingPlayerId: bot.id,
+                  fromX: bp.x,
+                  fromY: bp.y,
+                  fromSize: bp.size,
+                  toX: targetPlanet.x,
+                  toY: targetPlanet.y,
+                  toSize: targetPlanet.size
                 });
               }
             }
@@ -1424,8 +1499,8 @@ wss.on('connection', (ws: WebSocket) => {
           if (player.credits >= cost) {
             player.credits -= cost;
             const targetLevel = currentLevel + 1;
-            // Level 1: 8s, Level 2: 16s, Level 3: 24s, Level 4: 32s, Level 5: 40s
-            const duration = targetLevel * 8000;
+            // Speed up research: Level 1: 2.5s, Level 2: 5s, Level 10: 25s
+            const duration = targetLevel * 2500;
             player.research = {
               category,
               targetLevel,
@@ -1484,6 +1559,34 @@ wss.on('connection', (ws: WebSocket) => {
             addSystemMessage(lobby, `⚙️ Host updated minor independent factions density to ${count}.`);
             broadcastToLobby(conn.lobbyCode, { type: 'lobby_update', payload: { lobby } });
           }
+          break;
+        }
+
+        case 'update_lobby_setting': {
+          if (!conn) return;
+          const lobby = lobbies.get(conn.lobbyCode);
+          if (!lobby) return;
+          const player = lobby.players.find((p) => p.id === conn.playerId);
+          if (!player || !player.isHost) return;
+          const { setting, value } = message.payload;
+
+          if (setting === 'hazardsCount') {
+            if (typeof value === 'number' && value >= 0 && value <= 12) {
+              lobby.hazardsCount = value;
+              addSystemMessage(lobby, `⚙️ Host configured Space Hazards to: ${value} locations.`);
+            }
+          } else if (setting === 'hyperGrowthEnabled') {
+            lobby.hyperGrowthEnabled = !!value;
+            addSystemMessage(lobby, `⚙️ Host toggled Hyper Ship-Growth to: ${value ? 'ENABLED (1.5x speed)' : 'DISABLED'}.`);
+          } else if (setting === 'superweaponsEnabled') {
+            lobby.superweaponsEnabled = !!value;
+            addSystemMessage(lobby, `⚙️ Host toggled Orbital Superweapons to: ${value ? 'ENABLED' : 'DISABLED'}.`);
+          } else if (setting === 'highYieldResources') {
+            lobby.highYieldResources = !!value;
+            addSystemMessage(lobby, `⚙️ Host toggled Resource Abundance to: ${value ? 'ENABLED (2.0x yield)' : 'DISABLED'}.`);
+          }
+
+          broadcastToLobby(conn.lobbyCode, { type: 'lobby_update', payload: { lobby } });
           break;
         }
 
@@ -1597,7 +1700,7 @@ wss.on('connection', (ws: WebSocket) => {
           const player = lobby.players.find((p) => p.id === conn.playerId);
           if (!player) return;
 
-          const { fromPlanetId, toPlanetId } = message.payload;
+          const { fromPlanetId, toPlanetId, laserType } = message.payload;
           const fromPlanet = lobby.planets.find((p) => p.id === fromPlanetId);
           const toPlanet = lobby.planets.find((p) => p.id === toPlanetId);
 
@@ -1619,7 +1722,10 @@ wss.on('connection', (ws: WebSocket) => {
             return;
           }
 
-          const shotCost = lvl === 3 ? (4000 + (fromPlanet.planetBreakerUses || 0) * 2000) : 1000;
+          // At lvl 3, standard and breaker are both extra choices!
+          const isBreakerChoice = lvl === 3 && laserType === 'breaker';
+          const shotCost = isBreakerChoice ? 3000 : 1000;
+
           if (player.credits < shotCost) {
             ws.send(JSON.stringify({ type: 'error', payload: { message: `Insufficient credits to fire (${shotCost} CR needed)` } }));
             return;
@@ -1632,49 +1738,61 @@ wss.on('connection', (ws: WebSocket) => {
             lobby.activeLasers = [];
           }
 
-          if (lvl === 3) {
-            // Planet Breaker! Blow up planet completely
+          // Calculate travel delay proportional to distance
+          const dx = toPlanet.x - fromPlanet.x;
+          const dy = toPlanet.y - fromPlanet.y;
+          const distance = Math.sqrt(dx * dx + dy * dy);
+          const travelSpeed = 250; // pixels per second
+          const impactDelay = Math.max(500, Math.min(3000, (distance / travelSpeed) * 1000));
+
+          if (isBreakerChoice) {
             fromPlanet.planetBreakerUses = (fromPlanet.planetBreakerUses || 0) + 1;
-            toPlanet.isDestroyed = true;
-            toPlanet.ships = 0;
-            toPlanet.ownerId = null; // Neutralize and destroy
-            addSystemMessage(lobby, `🔥 PLANET BREAKER ACTIVATED: ${player.name} fired the Level 3 Planet Breaker from ${fromPlanet.name} and VAPORIZED ${toPlanet.name}!`);
+            addSystemMessage(lobby, `🔥 PLANET BREAKER ACTIVATED: ${player.name} launched a Planet Breaker projectile from ${fromPlanet.name} targeting ${toPlanet.name}! Impact in ${(impactDelay / 1000).toFixed(1)}s!`);
 
             lobby.activeLasers.push({
               id: `laser-${Date.now()}-${Math.random()}`,
               fromPlanetId: fromPlanet.id,
               toPlanetId: toPlanet.id,
               firedAt: now,
-              duration: 4500, // 4.5 seconds of dramatic animation!
+              duration: 4500, // 4.5 seconds animation
               type: 'breaker',
               color: player.color,
-              isShieldBlocked: false
+              isShieldBlocked: false,
+              impactDelay: impactDelay,
+              damage: 0,
+              impactProcessed: false,
+              firingPlayerId: player.id,
+              fromX: fromPlanet.x,
+              fromY: fromPlanet.y,
+              fromSize: fromPlanet.size,
+              toX: toPlanet.x,
+              toY: toPlanet.y,
+              toSize: toPlanet.size
             });
           } else {
-            // Standard laser shot
-            const dmg = lvl === 1 ? 75 : 135;
-            
-            // Check shield block
+            const dmg = lvl === 1 ? 75 : lvl === 2 ? 135 : 175; // Even more powerful standard laser at lvl 3!
             const isShieldBlocked = toPlanet.hasShield && toPlanet.shieldActive && (toPlanet.shieldCooldownUntil || 0) < now;
-            
-            if (isShieldBlocked) {
-              toPlanet.shieldActive = false;
-              toPlanet.shieldCooldownUntil = now + 35000; // 35 seconds cooldown
-              addSystemMessage(lobby, `🛡️ SHIELD ABSORBED: ${player.name}'s laser blast from ${fromPlanet.name} was fully blocked by ${toPlanet.name}'s Deflector Shield! Deflectors are now offline for 35s.`);
-            } else {
-              toPlanet.ships = Math.max(0, toPlanet.ships - dmg);
-              addSystemMessage(lobby, `💥 DIRECT HIT: ${player.name} fired a tactical laser from ${fromPlanet.name} at ${toPlanet.name}, destroying ${dmg} defending ships!`);
-            }
+            addSystemMessage(lobby, `📡 LASER LAUNCHED: ${player.name} fired a tactical laser from ${fromPlanet.name} targeting ${toPlanet.name}! Impact in ${(impactDelay / 1000).toFixed(1)}s!`);
 
             lobby.activeLasers.push({
               id: `laser-${Date.now()}-${Math.random()}`,
               fromPlanetId: fromPlanet.id,
               toPlanetId: toPlanet.id,
               firedAt: now,
-              duration: 2500, // 2.5 seconds to easily read and see!
+              duration: 2500, // 2.5 seconds visual duration
               type: 'standard',
               color: player.color,
-              isShieldBlocked: isShieldBlocked
+              isShieldBlocked: isShieldBlocked,
+              impactDelay: impactDelay,
+              damage: dmg,
+              impactProcessed: false,
+              firingPlayerId: player.id,
+              fromX: fromPlanet.x,
+              fromY: fromPlanet.y,
+              fromSize: fromPlanet.size,
+              toX: toPlanet.x,
+              toY: toPlanet.y,
+              toSize: toPlanet.size
             });
           }
 

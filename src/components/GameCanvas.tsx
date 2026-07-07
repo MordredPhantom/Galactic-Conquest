@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { Planet, Fleet, Player, PlayerColor, ActiveLaserEffect } from '../types';
-import { ZoomIn, ZoomOut, RefreshCw } from 'lucide-react';
+import { Planet, Fleet, Player, PlayerColor, ActiveLaserEffect, SpaceHazard } from '../types';
+import { ZoomIn, ZoomOut, RefreshCw, Layers } from 'lucide-react';
 
 interface GameCanvasProps {
   planets: Planet[];
@@ -11,11 +11,14 @@ interface GameCanvasProps {
   onLaunchFleet: (fromId: string, toId?: string, targetFleetId?: string) => void;
   selectedPlanetId: string | null;
   onSelectPlanet: (planetId: string | null) => void;
-  isTargetingWeapon: boolean;
-  onFireWeapon?: (targetPlanetId: string) => void;
+  selectedPlanetIds?: string[];
+  onSelectPlanets?: (planetIds: string[]) => void;
+  isTargetingWeapon: 'standard' | 'breaker' | null;
+  onFireWeapon?: (targetPlanetId: string, laserType: 'standard' | 'breaker') => void;
   mapWidth?: number;
   mapHeight?: number;
   activeLasers?: ActiveLaserEffect[];
+  hazards?: SpaceHazard[];
 }
 
 interface Explosion {
@@ -36,11 +39,14 @@ export default function GameCanvas({
   onLaunchFleet,
   selectedPlanetId,
   onSelectPlanet,
+  selectedPlanetIds = [],
+  onSelectPlanets,
   isTargetingWeapon,
   onFireWeapon,
   mapWidth = 850,
   mapHeight = 550,
   activeLasers = [],
+  hazards = [],
 }: GameCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -70,11 +76,20 @@ export default function GameCanvas({
   // Selection state
   const [hoveredPlanetId, setHoveredPlanetId] = useState<string | null>(null);
   const [hoveredFleetId, setHoveredFleetId] = useState<string | null>(null);
+  const [hoveredHazardId, setHoveredHazardId] = useState<string | null>(null);
   
   // Drag state
   const [isDragging, setIsDragging] = useState(false);
   const [dragStartPlanetId, setDragStartPlanetId] = useState<string | null>(null);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+
+  // Box Selection states
+  const [isBoxSelecting, setIsBoxSelecting] = useState(false);
+  const [boxSelectStart, setBoxSelectStart] = useState<{ x: number; y: number } | null>(null);
+  const [boxSelectEnd, setBoxSelectEnd] = useState<{ x: number; y: number } | null>(null);
+
+  // Multi-select mode toggle (perfect for mobile, touchpad, or key registration in iframe)
+  const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
 
   // Instructions dismissible overlay (fades after 8 seconds or when clicked)
   const [showInstructions, setShowInstructions] = useState(true);
@@ -324,36 +339,82 @@ export default function GameCanvas({
   // Mouse handlers
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const planet = findPlanetAtCoords(e.clientX, e.clientY);
+    const isMultiModifier = e.shiftKey || e.ctrlKey || e.metaKey || isMultiSelectMode;
+
     if (planet) {
       if (isTargetingWeapon) {
         if (onFireWeapon) {
-          onFireWeapon(planet.id);
+          onFireWeapon(planet.id, isTargetingWeapon);
         }
         return;
       }
-      if (selectedPlanetId && selectedPlanetId !== planet.id) {
-        // Direct click-to-click action (either attack or friendly reinforcement)
-        onLaunchFleet(selectedPlanetId, planet.id);
+
+      const activeSelection = selectedPlanetIds.length > 0 ? selectedPlanetIds : (selectedPlanetId ? [selectedPlanetId] : []);
+      const ownsClickedPlanet = planet.ownerId === currentPlayerId;
+
+      if (activeSelection.length > 0 && !isMultiModifier && (!ownsClickedPlanet || !activeSelection.includes(planet.id))) {
+        // Attack or Reinforce target from ALL selected planets!
+        activeSelection.forEach((fromId) => {
+          if (fromId !== planet.id) {
+            onLaunchFleet(fromId, planet.id);
+          }
+        });
         
-        // Clear selection to prevent accidental selection of the target planet
+        // Clear selection to indicate commands issued
+        if (onSelectPlanets) onSelectPlanets([]);
         onSelectPlanet(null);
-      } else if (planet.ownerId === currentPlayerId) {
-        onSelectPlanet(planet.id);
-        setIsDragging(true);
-        setDragStartPlanetId(planet.id);
+      } else {
+        // Selection adjustment
+        if (ownsClickedPlanet) {
+          if (isMultiModifier) {
+            let nextSelection = [...activeSelection];
+            if (nextSelection.includes(planet.id)) {
+              nextSelection = nextSelection.filter((id) => id !== planet.id);
+            } else {
+              nextSelection.push(planet.id);
+            }
+            if (onSelectPlanets) onSelectPlanets(nextSelection);
+            onSelectPlanet(nextSelection[0] || null);
+          } else {
+            // Single selection & start drag
+            if (onSelectPlanets) onSelectPlanets([planet.id]);
+            onSelectPlanet(planet.id);
+            setIsDragging(true);
+            setDragStartPlanetId(planet.id);
+          }
+        } else {
+          // Clicked non-owned planet
+          if (onSelectPlanets) onSelectPlanets([]);
+          onSelectPlanet(null);
+        }
       }
     } else {
       // Check if they clicked an existing traveling fleet instead
       const fleet = findFleetAtCoords(e.clientX, e.clientY);
-      if (fleet && selectedPlanetId) {
-        onLaunchFleet(selectedPlanetId, undefined, fleet.id);
+      const activeSelection = selectedPlanetIds.length > 0 ? selectedPlanetIds : (selectedPlanetId ? [selectedPlanetId] : []);
+      
+      if (fleet && activeSelection.length > 0) {
+        activeSelection.forEach((fromId) => {
+          onLaunchFleet(fromId, undefined, fleet.id);
+        });
+        if (onSelectPlanets) onSelectPlanets([]);
         onSelectPlanet(null);
       } else {
-        onSelectPlanet(null);
-        // Start PANNING because they clicked empty space!
-        setIsPanning(true);
-        hasInteractedRef.current = true;
-        panStartRef.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
+        if (!isMultiModifier) {
+          if (onSelectPlanets) onSelectPlanets([]);
+          onSelectPlanet(null);
+        }
+        
+        if (isMultiModifier) {
+          setIsBoxSelecting(true);
+          const { x, y } = clientToWorld(e.clientX, e.clientY);
+          setBoxSelectStart({ x, y });
+          setBoxSelectEnd({ x, y });
+        } else {
+          setIsPanning(true);
+          hasInteractedRef.current = true;
+          panStartRef.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
+        }
       }
     }
   };
@@ -366,6 +427,12 @@ export default function GameCanvas({
       return;
     }
 
+    if (isBoxSelecting && boxSelectStart) {
+      const { x, y } = clientToWorld(e.clientX, e.clientY);
+      setBoxSelectEnd({ x, y });
+      return;
+    }
+
     const { x, y } = clientToWorld(e.clientX, e.clientY);
     setMousePos({ x, y });
 
@@ -373,10 +440,30 @@ export default function GameCanvas({
     if (planet) {
       setHoveredPlanetId(planet.id);
       setHoveredFleetId(null);
+      setHoveredHazardId(null);
     } else {
       setHoveredPlanetId(null);
       const fleet = findFleetAtCoords(e.clientX, e.clientY);
-      setHoveredFleetId(fleet ? fleet.id : null);
+      if (fleet) {
+        setHoveredFleetId(fleet.id);
+        setHoveredHazardId(null);
+      } else {
+        setHoveredFleetId(null);
+        // Detect if hovered on any Space Hazard region
+        let foundHazardId: string | null = null;
+        if (hazards && hazards.length > 0) {
+          for (const hz of hazards) {
+            const dx = hz.x - x;
+            const dy = hz.y - y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist <= hz.radius) {
+              foundHazardId = hz.id;
+              break;
+            }
+          }
+        }
+        setHoveredHazardId(foundHazardId);
+      }
     }
   };
 
@@ -385,21 +472,68 @@ export default function GameCanvas({
       setIsPanning(false);
       return;
     }
+
+    if (isBoxSelecting && boxSelectStart && boxSelectEnd) {
+      setIsBoxSelecting(false);
+      
+      const x1 = Math.min(boxSelectStart.x, boxSelectEnd.x);
+      const x2 = Math.max(boxSelectStart.x, boxSelectEnd.x);
+      const y1 = Math.min(boxSelectStart.y, boxSelectEnd.y);
+      const y2 = Math.max(boxSelectStart.y, boxSelectEnd.y);
+      
+      const planetsInBox = planets.filter((p) => {
+        return p.ownerId === currentPlayerId && p.x >= x1 && p.x <= x2 && p.y >= y1 && p.y <= y2;
+      });
+      
+      const newIds = planetsInBox.map((p) => p.id);
+      const isMultiModifier = e.shiftKey || e.ctrlKey || e.metaKey || isMultiSelectMode;
+      let nextSelection = isMultiModifier ? [...selectedPlanetIds] : [];
+      
+      newIds.forEach((id) => {
+        if (!nextSelection.includes(id)) {
+          nextSelection.push(id);
+        }
+      });
+      
+      if (onSelectPlanets) onSelectPlanets(nextSelection);
+      onSelectPlanet(nextSelection[0] || null);
+      
+      setBoxSelectStart(null);
+      setBoxSelectEnd(null);
+      return;
+    }
+
     if (isDragging && dragStartPlanetId) {
       const targetPlanet = findPlanetAtCoords(e.clientX, e.clientY);
       if (targetPlanet && targetPlanet.id !== dragStartPlanetId) {
-        onLaunchFleet(dragStartPlanetId, targetPlanet.id);
+        const activeSelection = selectedPlanetIds.length > 0 ? selectedPlanetIds : (selectedPlanetId ? [selectedPlanetId] : []);
         
-        // Clear selection to prevent accidental selection of the target planet
+        if (activeSelection.includes(dragStartPlanetId)) {
+          activeSelection.forEach((fromId) => {
+            if (fromId !== targetPlanet.id) {
+              onLaunchFleet(fromId, targetPlanet.id);
+            }
+          });
+        } else {
+          onLaunchFleet(dragStartPlanetId, targetPlanet.id);
+        }
+        
+        if (onSelectPlanets) onSelectPlanets([]);
         onSelectPlanet(null);
       } else {
-        // Check if they dragged and released directly on top of a fleet
         const targetFleet = findFleetAtCoords(e.clientX, e.clientY);
         if (targetFleet) {
-          onLaunchFleet(dragStartPlanetId, undefined, targetFleet.id);
+          const activeSelection = selectedPlanetIds.length > 0 ? selectedPlanetIds : (selectedPlanetId ? [selectedPlanetId] : []);
+          if (activeSelection.includes(dragStartPlanetId)) {
+            activeSelection.forEach((fromId) => {
+              onLaunchFleet(fromId, undefined, targetFleet.id);
+            });
+          } else {
+            onLaunchFleet(dragStartPlanetId, undefined, targetFleet.id);
+          }
+          if (onSelectPlanets) onSelectPlanets([]);
           onSelectPlanet(null);
         } else {
-          // If released on origin or empty space, keep selected
           const releasedPlanet = findPlanetAtCoords(e.clientX, e.clientY);
           if (releasedPlanet && releasedPlanet.id === dragStartPlanetId) {
             onSelectPlanet(dragStartPlanetId);
@@ -495,74 +629,263 @@ export default function GameCanvas({
         ctx.fillRect(sx, sy, star.size, star.size);
       });
 
-      // 7. Draw dragging attack line preview
-      if (isDragging && dragStartPlanetId) {
-        const fromPlanet = planets.find((p) => p.id === dragStartPlanetId);
-        if (fromPlanet) {
-          ctx.beginPath();
-          ctx.moveTo(fromPlanet.x, fromPlanet.y);
+      // 6.5 Draw Beautiful Celestial Space Hazards
+      if (hazards && hazards.length > 0) {
+        hazards.forEach((hazard) => {
+          ctx.save();
           
-          let targetX = mousePos.x;
-          let targetY = mousePos.y;
-          if (hoveredPlanetId) {
-            const hp = planets.find(p => p.id === hoveredPlanetId);
-            if (hp) {
-              targetX = hp.x;
-              targetY = hp.y;
+          if (hazard.type === 'black_hole') {
+            // Draw radial glow for event horizon
+            const bhGlow = ctx.createRadialGradient(
+              hazard.x, hazard.y, hazard.radius * 0.1,
+              hazard.x, hazard.y, hazard.radius
+            );
+            bhGlow.addColorStop(0, 'rgba(0, 0, 0, 1)');
+            bhGlow.addColorStop(0.2, 'rgba(124, 58, 237, 0.25)'); // Violet accretion edge
+            bhGlow.addColorStop(0.6, 'rgba(79, 70, 229, 0.1)'); // Indigo outer pull
+            bhGlow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            
+            ctx.fillStyle = bhGlow;
+            ctx.beginPath();
+            ctx.arc(hazard.x, hazard.y, hazard.radius, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Draw solid pitch-black core (singular singularity)
+            ctx.fillStyle = '#010206';
+            ctx.shadowColor = '#818CF8';
+            ctx.shadowBlur = 12;
+            ctx.beginPath();
+            ctx.arc(hazard.x, hazard.y, hazard.radius * 0.25, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+
+            // Draw spinning spiral accretion disk lines
+            ctx.strokeStyle = 'rgba(167, 139, 250, 0.45)';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            for (let a = 0; a < Math.PI * 2; a += 0.1) {
+              const rFactor = 0.25 + 0.55 * (a / (Math.PI * 2));
+              const r = hazard.radius * rFactor;
+              const angleOffset = rotationAngle * 1.5;
+              const px = hazard.x + Math.cos(a + angleOffset) * r;
+              const py = hazard.y + Math.sin(a + angleOffset) * r;
+              if (a === 0) ctx.moveTo(px, py);
+              else ctx.lineTo(px, py);
             }
-          } else if (hoveredFleetId) {
-            const hf = fleets.find(f => f.id === hoveredFleetId);
-            if (hf) {
-              targetX = hf.x;
-              targetY = hf.y;
+            ctx.stroke();
+
+          } else if (hazard.type === 'ion_storm') {
+            // Fuzzy ionic yellow-cyan cloud
+            const stormGlow = ctx.createRadialGradient(
+              hazard.x, hazard.y, hazard.radius * 0.1,
+              hazard.x, hazard.y, hazard.radius
+            );
+            stormGlow.addColorStop(0, 'rgba(234, 179, 8, 0.22)'); // Golden energy core
+            stormGlow.addColorStop(0.5, 'rgba(6, 182, 212, 0.12)'); // Cyan static
+            stormGlow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            
+            ctx.fillStyle = stormGlow;
+            ctx.beginPath();
+            ctx.arc(hazard.x, hazard.y, hazard.radius, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Draw inner electric crackles
+            ctx.strokeStyle = 'rgba(253, 224, 71, 0.7)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            let lastX = hazard.x + (Math.random() * 20 - 10);
+            let lastY = hazard.y + (Math.random() * 20 - 10);
+            ctx.moveTo(lastX, lastY);
+            for (let k = 0; k < 5; k++) {
+              lastX += (Math.random() * 36 - 18);
+              lastY += (Math.random() * 36 - 18);
+              // clamp within radius
+              const d = Math.sqrt((lastX - hazard.x)**2 + (lastY - hazard.y)**2);
+              if (d < hazard.radius * 0.8) {
+                ctx.lineTo(lastX, lastY);
+              }
             }
+            ctx.stroke();
+
+          } else if (hazard.type === 'asteroid_belt') {
+            // Brown-orange dusty belt lanes
+            const beltGlow = ctx.createRadialGradient(
+              hazard.x, hazard.y, hazard.radius * 0.4,
+              hazard.x, hazard.y, hazard.radius
+            );
+            beltGlow.addColorStop(0, 'rgba(120, 113, 108, 0.1)');
+            beltGlow.addColorStop(0.7, 'rgba(194, 65, 12, 0.08)'); // Fiery dust
+            beltGlow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            
+            ctx.fillStyle = beltGlow;
+            ctx.beginPath();
+            ctx.arc(hazard.x, hazard.y, hazard.radius, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Draw tiny orbiting asteroid particles (using hazard's static coordinates for seeding)
+            ctx.fillStyle = '#78716C';
+            for (let p = 0; p < 8; p++) {
+              const angle = (p * Math.PI / 4) + (rotationAngle * 0.15);
+              const orbitR = hazard.radius * (0.4 + (p * 0.07) % 0.5);
+              const ax = hazard.x + Math.cos(angle) * orbitR;
+              const ay = hazard.y + Math.sin(angle) * orbitR;
+              ctx.beginPath();
+              ctx.arc(ax, ay, 1.5 + (p % 3), 0, Math.PI * 2);
+              ctx.fill();
+            }
+
+          } else if (hazard.type === 'nebula') {
+            // Soft deep magenta/purple cosmic gas cloud
+            const nebGlow = ctx.createRadialGradient(
+              hazard.x, hazard.y, hazard.radius * 0.2,
+              hazard.x, hazard.y, hazard.radius
+            );
+            nebGlow.addColorStop(0, 'rgba(236, 72, 153, 0.18)'); // Soft pink core
+            nebGlow.addColorStop(0.5, 'rgba(139, 92, 246, 0.12)'); // Purple body
+            nebGlow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            
+            ctx.fillStyle = nebGlow;
+            ctx.beginPath();
+            ctx.arc(hazard.x, hazard.y, hazard.radius, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Render a secondary offset gas cloud for asymmetric cloud realism
+            const offsetAngle = rotationAngle * 0.05;
+            const ox = hazard.x + Math.cos(offsetAngle) * 15;
+            const oy = hazard.y + Math.sin(offsetAngle) * 15;
+            const subGlow = ctx.createRadialGradient(
+              ox, oy, hazard.radius * 0.1,
+              ox, oy, hazard.radius * 0.7
+            );
+            subGlow.addColorStop(0, 'rgba(6, 182, 212, 0.14)'); // Cyan secondary patch
+            subGlow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            ctx.fillStyle = subGlow;
+            ctx.beginPath();
+            ctx.arc(ox, oy, hazard.radius * 0.7, 0, Math.PI * 2);
+            ctx.fill();
           }
-          
-          ctx.lineTo(targetX, targetY);
-          
-          // Dash line effect
-          ctx.setLineDash([6, 4]);
-          const playerColor = players.find(p => p.id === currentPlayerId)?.color || '#3B82F6';
-          ctx.strokeStyle = playerColor;
-          ctx.lineWidth = 3;
-          ctx.shadowColor = playerColor;
-          ctx.shadowBlur = 10;
+
+          // Draw a very faint, dotted boundary ring so players can see exactly where it ends
+          ctx.strokeStyle = 
+            hazard.type === 'black_hole' ? 'rgba(124, 58, 237, 0.25)' :
+            hazard.type === 'ion_storm' ? 'rgba(234, 179, 8, 0.22)' :
+            hazard.type === 'asteroid_belt' ? 'rgba(249, 115, 22, 0.2)' :
+            'rgba(236, 72, 153, 0.2)';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 6]);
+          ctx.beginPath();
+          ctx.arc(hazard.x, hazard.y, hazard.radius, 0, Math.PI * 2);
           ctx.stroke();
           ctx.setLineDash([]); // Reset
-          ctx.shadowBlur = 0; // Reset
-        }
+
+          // Draw brief stylized text label inside/above the hazard region
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+          ctx.font = '8px "Space Grotesk", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(hazard.name.toUpperCase(), hazard.x, hazard.y - hazard.radius + 12);
+
+          ctx.restore();
+        });
       }
 
-      // 8. Draw click-to-click target preview line
-      if (selectedPlanetId && !isDragging) {
-        const fromPlanet = planets.find((p) => p.id === selectedPlanetId);
-        if (fromPlanet) {
-          ctx.beginPath();
-          ctx.moveTo(fromPlanet.x, fromPlanet.y);
-          
-          let targetX = mousePos.x;
-          let targetY = mousePos.y;
-          if (hoveredPlanetId) {
-            const hp = planets.find(p => p.id === hoveredPlanetId);
-            if (hp) {
-              targetX = hp.x;
-              targetY = hp.y;
+      // 7. Draw dragging attack line preview for ALL selected planets
+      if (isDragging && dragStartPlanetId) {
+        const activeSelection = selectedPlanetIds.length > 0 && selectedPlanetIds.includes(dragStartPlanetId)
+          ? selectedPlanetIds
+          : [dragStartPlanetId];
+
+        activeSelection.forEach((fromId) => {
+          const fromPlanet = planets.find((p) => p.id === fromId);
+          if (fromPlanet) {
+            ctx.beginPath();
+            ctx.moveTo(fromPlanet.x, fromPlanet.y);
+            
+            let targetX = mousePos.x;
+            let targetY = mousePos.y;
+            if (hoveredPlanetId) {
+              const hp = planets.find(p => p.id === hoveredPlanetId);
+              if (hp) {
+                targetX = hp.x;
+                targetY = hp.y;
+              }
+            } else if (hoveredFleetId) {
+              const hf = fleets.find(f => f.id === hoveredFleetId);
+              if (hf) {
+                targetX = hf.x;
+                targetY = hf.y;
+              }
             }
-          } else if (hoveredFleetId) {
-            const hf = fleets.find(f => f.id === hoveredFleetId);
-            if (hf) {
-              targetX = hf.x;
-              targetY = hf.y;
-            }
+            
+            ctx.lineTo(targetX, targetY);
+            
+            // Dash line effect
+            ctx.setLineDash([6, 4]);
+            const playerColor = players.find(p => p.id === currentPlayerId)?.color || '#3B82F6';
+            ctx.strokeStyle = playerColor;
+            ctx.lineWidth = 2.5;
+            ctx.shadowColor = playerColor;
+            ctx.shadowBlur = 8;
+            ctx.stroke();
+            ctx.setLineDash([]); // Reset
+            ctx.shadowBlur = 0; // Reset
           }
-          
-          ctx.lineTo(targetX, targetY);
-          ctx.setLineDash([4, 6]);
-          ctx.strokeStyle = 'rgba(245, 158, 11, 0.4)';
-          ctx.lineWidth = 1.5;
-          ctx.stroke();
-          ctx.setLineDash([]);
-        }
+        });
+      }
+
+      // 8. Draw click-to-click target preview lines for ALL selected planets
+      const activeSelection = selectedPlanetIds.length > 0 ? selectedPlanetIds : (selectedPlanetId ? [selectedPlanetId] : []);
+      if (activeSelection.length > 0 && !isDragging) {
+        activeSelection.forEach((fromId) => {
+          const fromPlanet = planets.find((p) => p.id === fromId);
+          if (fromPlanet) {
+            ctx.beginPath();
+            ctx.moveTo(fromPlanet.x, fromPlanet.y);
+            
+            let targetX = mousePos.x;
+            let targetY = mousePos.y;
+            if (hoveredPlanetId) {
+              const hp = planets.find(p => p.id === hoveredPlanetId);
+              if (hp) {
+                targetX = hp.x;
+                targetY = hp.y;
+              }
+            } else if (hoveredFleetId) {
+              const hf = fleets.find(f => f.id === hoveredFleetId);
+              if (hf) {
+                targetX = hf.x;
+                targetY = hf.y;
+              }
+            }
+            
+            ctx.lineTo(targetX, targetY);
+            ctx.setLineDash([4, 6]);
+            ctx.strokeStyle = 'rgba(245, 158, 11, 0.4)';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+        });
+      }
+
+      // 8.5 Draw beautiful box-selection glowing rectangle
+      if (isBoxSelecting && boxSelectStart && boxSelectEnd) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(245, 158, 11, 0.8)'; // Golden Amber border
+        ctx.lineWidth = 1.5;
+        ctx.fillStyle = 'rgba(245, 158, 11, 0.08)'; // Transparent fill
+        ctx.shadowColor = '#F59E0B';
+        ctx.shadowBlur = 6;
+        
+        const bx = boxSelectStart.x;
+        const by = boxSelectStart.y;
+        const bw = boxSelectEnd.x - boxSelectStart.x;
+        const bh = boxSelectEnd.y - boxSelectStart.y;
+        
+        ctx.beginPath();
+        ctx.rect(bx, by, bw, bh);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
       }
 
       // 9. Draw Planets & Systems
@@ -655,7 +978,8 @@ export default function GameCanvas({
         }
 
         // Selection Target Ring
-        if (isSelected) {
+        const isSelectedInMulti = selectedPlanetIds ? selectedPlanetIds.includes(planet.id) : isSelected;
+        if (isSelectedInMulti) {
           ctx.strokeStyle = '#F59E0B'; // Vibrant amber
           ctx.lineWidth = 3;
           ctx.shadowColor = '#F59E0B';
@@ -1067,6 +1391,23 @@ export default function GameCanvas({
 
       // 12. Draw Traveling Fleets
       fleets.forEach((fleet) => {
+        // Check if the fleet is inside any stealth nebula hazard and should be hidden
+        let isHiddenByNebula = false;
+        if (hazards && hazards.length > 0) {
+          const inNebula = hazards.some(hazard => 
+            hazard.type === 'nebula' && 
+            Math.sqrt((fleet.x - hazard.x) ** 2 + (fleet.y - hazard.y) ** 2) <= hazard.radius
+          );
+          const localPlayer = players.find(p => p.id === currentPlayerId);
+          const isSpectator = localPlayer ? localPlayer.isSpectator : false;
+          if (inNebula && fleet.ownerId !== currentPlayerId && !isSpectator) {
+            isHiddenByNebula = true;
+          }
+        }
+        if (isHiddenByNebula) {
+          return; // Skip rendering this fleet - Stealth!
+        }
+
         const fromPlanet = planets.find((p) => p.id === fleet.fromPlanetId);
         const toPlanet = planets.find((p) => p.id === fleet.toPlanetId);
 
@@ -1102,10 +1443,16 @@ export default function GameCanvas({
         }
         const angle = Math.atan2(dy, dx);
 
-        // 12.1 Render Combat Lasers & Effects
+        // 12.1 Render Combat Lasers & Effects (Crackling Lightning Arcs & Clash shockwaves)
         if (fleet.inCombat) {
-          // Draw a laser beam to another enemy fleet nearby!
-          const enemy = fleets.find(f => f.id !== fleet.id && f.ownerId !== fleet.ownerId && Math.sqrt((f.x - fleet.x)**2 + (f.y - fleet.y)**2) < 25);
+          // Find an actual interacting enemy fleet that is close by or explicitly targeted
+          const enemy = fleets.find(f => 
+            f.id !== fleet.id && 
+            f.ownerId !== fleet.ownerId && 
+            (f.id === fleet.targetFleetId || 
+             fleet.id === f.targetFleetId || 
+             Math.sqrt((f.x - fleet.x)**2 + (f.y - fleet.y)**2) < 55)
+          );
           if (enemy) {
             let enemySmoothed = smoothedFleetsRef.current.get(enemy.id) || enemy;
             const ex = enemySmoothed.x;
@@ -1113,11 +1460,29 @@ export default function GameCanvas({
 
             ctx.save();
             ctx.strokeStyle = fleet.ownerColor;
-            ctx.lineWidth = 1.0 + Math.random() * 1.5;
+            ctx.lineWidth = 1.2 + Math.random() * 1.5;
             ctx.shadowColor = fleet.ownerColor;
-            ctx.shadowBlur = 6;
+            ctx.shadowBlur = 8;
+            
+            // Draw a high-tech zig-zag energy arc
             ctx.beginPath();
             ctx.moveTo(fx, fy);
+            
+            const segments = 3;
+            const stepX = (ex - fx) / segments;
+            const stepY = (ey - fy) / segments;
+            
+            // Perpendicular vector for offset jittering
+            const px_perp = -(ey - fy) / 6;
+            const py_perp = (ex - fx) / 6;
+            
+            for (let k = 1; k < segments; k++) {
+              const jitter = (Math.random() * 2 - 1) * 3;
+              ctx.lineTo(
+                fx + stepX * k + px_perp * jitter,
+                fy + stepY * k + py_perp * jitter
+              );
+            }
             ctx.lineTo(ex, ey);
             ctx.stroke();
             ctx.restore();
@@ -1137,6 +1502,19 @@ export default function GameCanvas({
                 life: 0,
                 maxLife: 12 + Math.floor(Math.random() * 12)
               });
+              
+              // Occasionally add a small combat midpoint shockwave ring
+              if (Math.random() > 0.8) {
+                shockwavesRef.current.push({
+                  x: midX,
+                  y: midY,
+                  color: Math.random() > 0.5 ? fleet.ownerColor : enemy.ownerColor,
+                  radius: 1,
+                  maxRadius: 12 + Math.random() * 8,
+                  alpha: 1.0,
+                  speed: 1.5
+                });
+              }
             }
           }
         }
@@ -1231,18 +1609,26 @@ export default function GameCanvas({
         }
       });
 
-      // 12.4 Render Real-time Orbital Laser & Planet Breaker Firing Effects
       if (activeLasers && activeLasers.length > 0) {
         activeLasers.forEach((eff) => {
           const fromPlanet = planets.find((p) => p.id === eff.fromPlanetId);
           const toPlanet = planets.find((p) => p.id === eff.toPlanetId);
-          if (!fromPlanet || !toPlanet) return;
+
+          const fx = fromPlanet ? fromPlanet.x : (eff.fromX ?? 0);
+          const fy = fromPlanet ? fromPlanet.y : (eff.fromY ?? 0);
+          const fsize = fromPlanet ? fromPlanet.size : (eff.fromSize ?? 25);
+
+          const tx = toPlanet ? toPlanet.x : (eff.toX ?? 0);
+          const ty = toPlanet ? toPlanet.y : (eff.toY ?? 0);
+          const tsize = toPlanet ? toPlanet.size : (eff.toSize ?? 25);
+
+          if (fx === 0 && fy === 0 && tx === 0 && ty === 0) return;
 
           const elapsed = Date.now() - eff.firedAt;
           if (elapsed < 0 || elapsed > eff.duration) return;
 
-          const dx = toPlanet.x - fromPlanet.x;
-          const dy = toPlanet.y - fromPlanet.y;
+          const dx = tx - fx;
+          const dy = ty - fy;
           const distance = Math.sqrt(dx * dx + dy * dy) || 1;
 
           if (eff.type === 'breaker') {
@@ -1257,31 +1643,31 @@ export default function GameCanvas({
               ctx.shadowBlur = 20 + chargeRatio * 35;
               ctx.fillStyle = '#FFFFFF';
               ctx.beginPath();
-              ctx.arc(fromPlanet.x, fromPlanet.y, fromPlanet.size * 0.4 + chargeRatio * 18, 0, Math.PI * 2);
+              ctx.arc(fx, fy, fsize * 0.4 + chargeRatio * 18, 0, Math.PI * 2);
               ctx.fill();
               ctx.restore();
 
               // Inward collapsing focus rings
               for (let r = 0; r < 3; r++) {
                 const ringProgress = ((elapsed / 500) + r / 3) % 1.0;
-                const radius = fromPlanet.size * 4.5 * (1.0 - ringProgress);
+                const radius = fsize * 4.5 * (1.0 - ringProgress);
                 ctx.save();
                 ctx.strokeStyle = eff.color;
                 ctx.lineWidth = 2.0 * (1.0 - ringProgress);
                 ctx.shadowColor = eff.color;
                 ctx.shadowBlur = 10;
                 ctx.beginPath();
-                ctx.arc(fromPlanet.x, fromPlanet.y, Math.max(fromPlanet.size * 0.5, radius), 0, Math.PI * 2);
+                ctx.arc(fx, fy, Math.max(fsize * 0.5, radius), 0, Math.PI * 2);
                 ctx.stroke();
                 ctx.restore();
               }
             } else if (elapsed >= 2000 && elapsed < 2800) {
               // Phase B: Heavy plasma bolt travel (2000ms - 2800ms)
               const pct = (elapsed - 2000) / 800;
-              const bx = fromPlanet.x + dx * pct;
-              const by = fromPlanet.y + dy * pct;
-              const tx = fromPlanet.x + dx * Math.max(0, pct - 0.22);
-              const ty = fromPlanet.y + dy * Math.max(0, pct - 0.22);
+              const bx = fx + dx * pct;
+              const by = fy + dy * pct;
+              const btx = fx + dx * Math.max(0, pct - 0.22);
+              const bty = fy + dy * Math.max(0, pct - 0.22);
 
               ctx.save();
               ctx.strokeStyle = '#FFFFFF';
@@ -1289,14 +1675,14 @@ export default function GameCanvas({
               ctx.shadowColor = eff.color;
               ctx.shadowBlur = 35;
               ctx.beginPath();
-              ctx.moveTo(tx, ty);
+              ctx.moveTo(btx, bty);
               ctx.lineTo(bx, by);
               ctx.stroke();
 
               ctx.strokeStyle = eff.color;
               ctx.lineWidth = 28;
               ctx.beginPath();
-              ctx.moveTo(tx, ty);
+              ctx.moveTo(btx, bty);
               ctx.lineTo(bx, by);
               ctx.stroke();
               ctx.restore();
@@ -1328,15 +1714,15 @@ export default function GameCanvas({
                 ctx.shadowColor = eff.color;
                 ctx.shadowBlur = 45 * streamFade;
                 ctx.beginPath();
-                ctx.moveTo(fromPlanet.x, fromPlanet.y);
-                ctx.lineTo(toPlanet.x, toPlanet.y);
+                ctx.moveTo(fx, fy);
+                ctx.lineTo(tx, ty);
                 ctx.stroke();
 
                 ctx.strokeStyle = eff.color;
                 ctx.lineWidth = (36 + Math.sin(Date.now() * 0.18) * 12) * streamFade;
                 ctx.beginPath();
-                ctx.moveTo(fromPlanet.x, fromPlanet.y);
-                ctx.lineTo(toPlanet.x, toPlanet.y);
+                ctx.moveTo(fx, fy);
+                ctx.lineTo(tx, ty);
                 ctx.stroke();
                 ctx.restore();
               }
@@ -1346,10 +1732,10 @@ export default function GameCanvas({
               ctx.shadowColor = '#FF5500';
               ctx.shadowBlur = 45 + Math.sin(Date.now() * 0.25) * 25;
 
-              const radius = toPlanet.size * (1.2 + impactProgress * 2.2);
+              const radius = tsize * (1.2 + impactProgress * 2.2);
               const bubbleGrad = ctx.createRadialGradient(
-                toPlanet.x, toPlanet.y, 4,
-                toPlanet.x, toPlanet.y, radius
+                tx, ty, 4,
+                tx, ty, radius
               );
               bubbleGrad.addColorStop(0, '#FFFFFF');
               bubbleGrad.addColorStop(0.2, '#F97316');
@@ -1359,55 +1745,83 @@ export default function GameCanvas({
 
               ctx.fillStyle = bubbleGrad;
               ctx.beginPath();
-              ctx.arc(toPlanet.x, toPlanet.y, radius, 0, Math.PI * 2);
+              ctx.arc(tx, ty, radius, 0, Math.PI * 2);
               ctx.fill();
 
               // Draw planet tearing cracks
-              const numFissures = 10;
+              const numFissures = 12;
               ctx.strokeStyle = '#FF7700';
-              ctx.lineWidth = 4 * (1.0 - impactProgress);
+              ctx.lineWidth = 5 * (1.0 - impactProgress);
               for (let f = 0; f < numFissures; f++) {
                 const fissureAngle = (f / numFissures) * Math.PI * 2 + (Math.sin(Date.now() * 0.05) * 0.1);
                 ctx.beginPath();
-                ctx.moveTo(toPlanet.x, toPlanet.y);
+                ctx.moveTo(tx, ty);
                 ctx.lineTo(
-                  toPlanet.x + Math.cos(fissureAngle) * (toPlanet.size * 1.5 * (1.0 + impactProgress)),
-                  toPlanet.y + Math.sin(fissureAngle) * (toPlanet.size * 1.5 * (1.0 + impactProgress))
+                  tx + Math.cos(fissureAngle) * (tsize * 1.5 * (1.0 + impactProgress)),
+                  ty + Math.sin(fissureAngle) * (tsize * 1.5 * (1.0 + impactProgress))
                 );
                 ctx.stroke();
               }
               ctx.restore();
 
+              // 2b. Draw drifting vaporized planetary fragments
+              const numFragments = 10;
+              ctx.fillStyle = '#475569'; // Rocky slate fragments
+              ctx.strokeStyle = '#FF5500';
+              ctx.lineWidth = 1.5;
+              for (let f = 0; f < numFragments; f++) {
+                const fragAngle = (f / numFragments) * Math.PI * 2 + (impactProgress * 1.2);
+                const distanceRatio = 0.5 + impactProgress * 4.0;
+                const fragX = tx + Math.cos(fragAngle) * (tsize * distanceRatio);
+                const fragY = ty + Math.sin(fragAngle) * (tsize * distanceRatio);
+                const fragSize = Math.max(2, tsize * 0.3 * (1.0 - impactProgress));
+
+                ctx.save();
+                ctx.translate(fragX, fragY);
+                ctx.rotate(impactProgress * 3 + f);
+                ctx.shadowColor = '#FF3300';
+                ctx.shadowBlur = 12 * (1.0 - impactProgress);
+                ctx.beginPath();
+                ctx.moveTo(0, -fragSize);
+                ctx.lineTo(fragSize, -fragSize * 0.3);
+                ctx.lineTo(fragSize * 0.7, fragSize * 0.7);
+                ctx.lineTo(-fragSize * 0.5, fragSize * 0.5);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+                ctx.restore();
+              }
+
               // 3. Massive particle shower
               if (Math.random() > 0.1) {
-                const numParticles = 2;
+                const numParticles = 4;
                 for (let k = 0; k < numParticles; k++) {
                   const angle = Math.random() * Math.PI * 2;
-                  const speed = 2 + Math.random() * 6;
+                  const speed = 2 + Math.random() * 8;
                   explosionsRef.current.push({
-                    x: toPlanet.x + Math.cos(angle) * (toPlanet.size * 0.5),
-                    y: toPlanet.y + Math.sin(angle) * (toPlanet.size * 0.5),
+                    x: tx + Math.cos(angle) * (tsize * 0.5),
+                    y: ty + Math.sin(angle) * (tsize * 0.5),
                     vx: Math.cos(angle) * speed + (Math.random() * 2 - 1),
                     vy: Math.sin(angle) * speed + (Math.random() * 2 - 1),
-                    color: ['#FFFFFF', '#FFA500', '#EF4444', '#FCD34D'][Math.floor(Math.random() * 4)],
-                    size: 3.5 + Math.random() * 5.5,
+                    color: ['#FFFFFF', '#FFA500', '#EF4444', '#FCD34D', '#FF3300'][Math.floor(Math.random() * 5)],
+                    size: 3.5 + Math.random() * 6.5,
                     alpha: 1.0,
                     life: 0,
-                    maxLife: 25 + Math.floor(Math.random() * 30)
+                    maxLife: 25 + Math.floor(Math.random() * 35)
                   });
                 }
               }
 
               // 4. Repeated massive expanding ring shockwaves on impact
-              if (Math.random() > 0.88) {
+              if (Math.random() > 0.85) {
                 shockwavesRef.current.push({
-                  x: toPlanet.x,
-                  y: toPlanet.y,
+                  x: tx,
+                  y: ty,
                   color: '#FF3300',
                   radius: 10,
-                  maxRadius: toPlanet.size * 4.5,
+                  maxRadius: tsize * 5.5,
                   alpha: 1.0,
-                  speed: 5.0
+                  speed: 6.0
                 });
               }
             }
@@ -1418,10 +1832,10 @@ export default function GameCanvas({
             if (elapsed < 800) {
               // Phase A: Rapid laser bolt travel (0ms - 800ms)
               const pct = elapsed / 800;
-              const bx = fromPlanet.x + dx * pct;
-              const by = fromPlanet.y + dy * pct;
-              const tx = fromPlanet.x + dx * Math.max(0, pct - 0.15);
-              const ty = fromPlanet.y + dy * Math.max(0, pct - 0.15);
+              const bx = fx + dx * pct;
+              const by = fy + dy * pct;
+              const btx = fx + dx * Math.max(0, pct - 0.15);
+              const bty = fy + dy * Math.max(0, pct - 0.15);
 
               ctx.save();
               ctx.strokeStyle = '#FFFFFF';
@@ -1429,14 +1843,14 @@ export default function GameCanvas({
               ctx.shadowColor = eff.color;
               ctx.shadowBlur = 20;
               ctx.beginPath();
-              ctx.moveTo(tx, ty);
+              ctx.moveTo(btx, bty);
               ctx.lineTo(bx, by);
               ctx.stroke();
 
               ctx.strokeStyle = eff.color;
               ctx.lineWidth = 12;
               ctx.beginPath();
-              ctx.moveTo(tx, ty);
+              ctx.moveTo(btx, bty);
               ctx.lineTo(bx, by);
               ctx.stroke();
               ctx.restore();
@@ -1452,15 +1866,15 @@ export default function GameCanvas({
                 ctx.shadowColor = eff.color;
                 ctx.shadowBlur = 20 * beamFade;
                 ctx.beginPath();
-                ctx.moveTo(fromPlanet.x, fromPlanet.y);
-                ctx.lineTo(toPlanet.x, toPlanet.y);
+                ctx.moveTo(fx, fy);
+                ctx.lineTo(tx, ty);
                 ctx.stroke();
 
                 ctx.strokeStyle = eff.color;
                 ctx.lineWidth = (8 + Math.sin(Date.now() * 0.1) * 3) * beamFade;
                 ctx.beginPath();
-                ctx.moveTo(fromPlanet.x, fromPlanet.y);
-                ctx.lineTo(toPlanet.x, toPlanet.y);
+                ctx.moveTo(fx, fy);
+                ctx.lineTo(tx, ty);
                 ctx.stroke();
                 ctx.restore();
               }
@@ -1468,10 +1882,10 @@ export default function GameCanvas({
               // 2. Continuous sparkling explosions at target
               if (elapsed < 2300 && Math.random() > 0.4) {
                 const sparkAngle = Math.random() * Math.PI * 2;
-                const sparkDist = Math.random() * toPlanet.size * 0.7;
+                const sparkDist = Math.random() * tsize * 0.7;
                 explosionsRef.current.push({
-                  x: toPlanet.x + Math.cos(sparkAngle) * sparkDist,
-                  y: toPlanet.y + Math.sin(sparkAngle) * sparkDist,
+                  x: tx + Math.cos(sparkAngle) * sparkDist,
+                  y: ty + Math.sin(sparkAngle) * sparkDist,
                   vx: (Math.random() * 4 - 2),
                   vy: (Math.random() * 4 - 2),
                   color: Math.random() > 0.4 ? '#FFFFFF' : eff.color,
@@ -1491,7 +1905,7 @@ export default function GameCanvas({
                 ctx.shadowBlur = 15;
                 ctx.fillStyle = 'rgba(14, 165, 233, 0.12)';
                 ctx.beginPath();
-                ctx.arc(toPlanet.x, toPlanet.y, toPlanet.size * 1.35, 0, Math.PI * 2);
+                ctx.arc(tx, ty, tsize * 1.35, 0, Math.PI * 2);
                 ctx.fill();
                 ctx.stroke();
                 ctx.restore();
@@ -1499,8 +1913,8 @@ export default function GameCanvas({
                 // Shield sparks
                 if (elapsed < 2300 && Math.random() > 0.6) {
                   const shieldAngle = Math.random() * Math.PI * 2;
-                  const sx = toPlanet.x + Math.cos(shieldAngle) * (toPlanet.size * 1.35);
-                  const sy = toPlanet.y + Math.sin(shieldAngle) * (toPlanet.size * 1.35);
+                  const sx = tx + Math.cos(shieldAngle) * (tsize * 1.35);
+                  const sy = ty + Math.sin(shieldAngle) * (tsize * 1.35);
                   explosionsRef.current.push({
                     x: sx,
                     y: sy,
@@ -1517,11 +1931,11 @@ export default function GameCanvas({
                 // Non-blocked: standard impact shockwaves
                 if (elapsed < 1100 && Math.random() > 0.85) {
                   shockwavesRef.current.push({
-                    x: toPlanet.x,
-                    y: toPlanet.y,
+                    x: tx,
+                    y: ty,
                     color: eff.color,
                     radius: 5,
-                    maxRadius: toPlanet.size * 2.0,
+                    maxRadius: tsize * 2.0,
                     alpha: 1.0,
                     speed: 3.0
                   });
@@ -1598,6 +2012,7 @@ export default function GameCanvas({
 
   const hoveredPlanet = planets.find((p) => p.id === hoveredPlanetId);
   const hoveredFleet = fleets.find((f) => f.id === hoveredFleetId);
+  const hoveredHazard = hazards.find((h) => h.id === hoveredHazardId);
 
   // Zoom on mouse scroll (wheel) event
   const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
@@ -1659,9 +2074,9 @@ export default function GameCanvas({
   };
 
   const tooltipStyle: React.CSSProperties = {};
-  if (hoveredPlanet || hoveredFleet) {
-    const targetX = hoveredPlanet ? hoveredPlanet.x : (hoveredFleet ? hoveredFleet.x : mousePos.x);
-    const targetY = hoveredPlanet ? hoveredPlanet.y : (hoveredFleet ? hoveredFleet.y : mousePos.y);
+  if (hoveredPlanet || hoveredFleet || hoveredHazard) {
+    const targetX = hoveredPlanet ? hoveredPlanet.x : (hoveredFleet ? hoveredFleet.x : (hoveredHazard ? hoveredHazard.x : mousePos.x));
+    const targetY = hoveredPlanet ? hoveredPlanet.y : (hoveredFleet ? hoveredFleet.y : (hoveredHazard ? hoveredHazard.y : mousePos.y));
 
     const screenX = targetX * zoom + pan.x;
     const screenY = targetY * zoom + pan.y;
@@ -1711,6 +2126,18 @@ export default function GameCanvas({
       {/* Floating Tactical Zoom / Pan Controls Overlay */}
       <div className="absolute bottom-4 right-4 flex items-center gap-1.5 bg-slate-950/85 border border-slate-800/80 p-1.5 rounded-lg backdrop-blur-sm z-20 shadow-xl">
         <button
+          onClick={() => setIsMultiSelectMode(!isMultiSelectMode)}
+          title={isMultiSelectMode ? "Switch to Single-Select Mode" : "Switch to Multi-Select Mode (select multiple systems or drag a box without holding Shift)"}
+          className={`h-7 px-2 flex items-center gap-1.5 rounded font-mono text-[10px] font-bold border transition cursor-pointer select-none ${
+            isMultiSelectMode
+              ? 'bg-indigo-600 border-indigo-500 text-white shadow-md shadow-indigo-600/20'
+              : 'bg-slate-900 hover:bg-slate-800 text-slate-400 border-slate-800'
+          }`}
+        >
+          <Layers className="w-3.5 h-3.5" />
+          <span>{isMultiSelectMode ? 'Multi: ON' : 'Multi'}</span>
+        </button>
+        <button
           onClick={handleZoomIn}
           title="Zoom In"
           className="w-7 h-7 flex items-center justify-center rounded bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800/85 transition cursor-pointer select-none"
@@ -1735,6 +2162,40 @@ export default function GameCanvas({
           {Math.round(zoom * 100)}%
         </span>
       </div>
+
+      {/* Floating Space Hazard Tooltip */}
+      {hoveredHazard && (
+        <div 
+          style={tooltipStyle}
+          className="absolute pointer-events-none z-30 w-72 bg-slate-950/95 border border-slate-800/85 rounded-xl p-3 shadow-2xl backdrop-blur-md text-sans text-xs flex flex-col gap-2 transition-all duration-150"
+        >
+          <div className="border-b border-slate-850 pb-2">
+            <div className="flex items-center justify-between mb-1 gap-2">
+              <span className="font-bold text-slate-100 text-[13px] truncate flex items-center gap-1.5">
+                {hoveredHazard.type === 'black_hole' && '🕳️'}
+                {hoveredHazard.type === 'ion_storm' && '⚡'}
+                {hoveredHazard.type === 'asteroid_belt' && '☄️'}
+                {hoveredHazard.type === 'nebula' && '☁️'}
+                {hoveredHazard.name}
+              </span>
+              <span className="text-[8px] px-1.5 py-0.5 rounded border border-rose-500/30 bg-rose-500/10 text-rose-400 font-semibold tracking-wider uppercase font-mono">
+                Space Hazard
+              </span>
+            </div>
+            <div className="text-[10px] text-indigo-400 font-mono">
+              Class: {hoveredHazard.type.replace('_', ' ').toUpperCase()} anomaly
+            </div>
+          </div>
+          <div className="bg-slate-900/40 p-2.5 rounded border border-slate-800/40 text-[11px] leading-relaxed text-slate-300">
+            <p className="font-bold text-indigo-300 mb-1 font-mono uppercase text-[9px] tracking-wider">Tactical Impact:</p>
+            <p>{hoveredHazard.effect}</p>
+          </div>
+          <div className="text-[9px] text-slate-500 font-mono flex items-center justify-between">
+            <span>Range Radius: {hoveredHazard.radius} AU</span>
+            <span>Coordinates: [{Math.round(hoveredHazard.x)}, {Math.round(hoveredHazard.y)}]</span>
+          </div>
+        </div>
+      )}
 
       {/* Floating Dynamic Tactical Tooltip for Planets */}
       {hoveredPlanet && (() => {

@@ -16,10 +16,5 @@ View your app in AI Studio: https://ai.studio/apps/4636a24e-0493-4f21-9de3-7cfe6
 1. Install dependencies:
    `npm install`
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. (Optional) Set `VITE_SERVER_URI` in `.env.local` to the game server URI. Examples:
-   - `VITE_SERVER_URI=gc-server.example.com`
-   - `VITE_SERVER_URI=https://gc-server.example.com`
-   - `VITE_SERVER_URI=wss://gc-server.example.com`
-   If omitted, the app uses the same host it is served from.
-4. Run the app:
+3. Run the app:
    `npm run dev`

@@ -29,32 +29,9 @@ import {
   Globe,
   Package,
   Flame,
-  Swords
+  Swords,
+  Sliders
 } from 'lucide-react';
-
-const RAW_SERVER_URI = ((import.meta as { env?: Record<string, string | undefined> }).env?.VITE_SERVER_URI ?? '').trim();
-
-const getWebSocketServerUrl = () => {
-  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-
-  if (!RAW_SERVER_URI) {
-    return `${wsProtocol}//${window.location.host}`;
-  }
-
-  if (RAW_SERVER_URI.startsWith('ws://') || RAW_SERVER_URI.startsWith('wss://')) {
-    return RAW_SERVER_URI;
-  }
-
-  if (RAW_SERVER_URI.startsWith('http://') || RAW_SERVER_URI.startsWith('https://')) {
-    return RAW_SERVER_URI.replace(/^http/i, 'ws');
-  }
-
-  if (RAW_SERVER_URI.startsWith('//')) {
-    return `${wsProtocol}${RAW_SERVER_URI}`;
-  }
-
-  return `${wsProtocol}//${RAW_SERVER_URI}`;
-};
 
 export default function App() {
   // Websocket state
@@ -95,7 +72,8 @@ export default function App() {
 
   // Planetary Facilities and Targeting Weapon state
   const [selectedPlanetId, setSelectedPlanetId] = useState<string | null>(null);
-  const [isTargetingWeapon, setIsTargetingWeapon] = useState<boolean>(false);
+  const [selectedPlanetIds, setSelectedPlanetIds] = useState<string[]>([]);
+  const [isTargetingWeapon, setIsTargetingWeapon] = useState<'standard' | 'breaker' | null>(null);
 
   const [, setTick] = useState<number>(0);
   useEffect(() => {
@@ -136,7 +114,8 @@ export default function App() {
 
   // Initialize Websocket Connection
   useEffect(() => {
-    const wsUrl = getWebSocketServerUrl();
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.host}`;
     
     let ws: WebSocket;
     let reconnectTimeout: NodeJS.Timeout;
@@ -1105,6 +1084,116 @@ export default function App() {
                 )}
               </div>
 
+              {/* Custom Sector Modifiers & Rules */}
+              <div className="mb-6 pb-4 border-b border-slate-900">
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-300 mb-3 flex items-center gap-1.5 font-mono">
+                  <Sliders className="w-4 h-4 text-indigo-450 animate-pulse" />
+                  Sector Modifiers & Battle Parameters
+                </h3>
+                
+                <div className="space-y-4">
+                  {/* Space Hazards Slider */}
+                  <div className="bg-slate-900/35 border border-slate-900/60 p-3.5 rounded-xl">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-slate-200 uppercase tracking-wide flex items-center gap-1">
+                        <span>🌌</span> Anomaly Density Field
+                      </span>
+                      <span className="text-xs font-mono font-bold text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded border border-amber-400/20">
+                        {lobby.hazardsCount ?? 3} Anomalies
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="8"
+                      step="1"
+                      disabled={!isHost}
+                      value={lobby.hazardsCount ?? 3}
+                      onChange={(e) => sendMessage({ 
+                        type: 'update_lobby_setting', 
+                        payload: { key: 'hazardsCount', value: parseInt(e.target.value, 10) } 
+                      })}
+                      className="w-full h-1 bg-slate-900 rounded appearance-none cursor-pointer accent-amber-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                    />
+                    <p className="text-[10px] text-slate-400 mt-2 leading-relaxed font-sans">
+                      Places high-tech celestial hazards (Black Holes, Ion Storms, Asteroid Belts, Nebulas) with hazardous speed reductions, sensor jamming stealth, or gravitational drag across space.
+                    </p>
+                  </div>
+
+                  {/* Grid of Checkboxes */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    {/* Hyper Growth */}
+                    <button
+                      disabled={!isHost}
+                      onClick={() => sendMessage({ 
+                        type: 'update_lobby_setting', 
+                        payload: { key: 'hyperGrowthEnabled', value: !lobby.hyperGrowthEnabled } 
+                      })}
+                      className={`flex flex-col items-start text-left p-3 rounded-xl border transition cursor-pointer select-none ${
+                        lobby.hyperGrowthEnabled
+                          ? 'bg-emerald-950/20 border-emerald-500/30 text-slate-200'
+                          : 'bg-slate-900/35 border-slate-900 text-slate-450 hover:bg-slate-900/50'
+                      } disabled:opacity-55 disabled:cursor-not-allowed`}
+                    >
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <span className="text-base">📈</span>
+                        <span className="text-xs font-bold uppercase tracking-wider font-mono">Hyper Growth</span>
+                        {lobby.hyperGrowthEnabled && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>}
+                      </div>
+                      <p className="text-[9px] text-slate-400 leading-normal font-sans">
+                        Increases garrison replication rates across all star systems by <span className="text-emerald-400 font-bold font-mono">1.5x</span> speed.
+                      </p>
+                    </button>
+
+                    {/* High Yield Resources */}
+                    <button
+                      disabled={!isHost}
+                      onClick={() => sendMessage({ 
+                        type: 'update_lobby_setting', 
+                        payload: { key: 'highYieldResources', value: !lobby.highYieldResources } 
+                      })}
+                      className={`flex flex-col items-start text-left p-3 rounded-xl border transition cursor-pointer select-none ${
+                        lobby.highYieldResources
+                          ? 'bg-yellow-950/20 border-yellow-500/30 text-slate-200'
+                          : 'bg-slate-900/35 border-slate-900 text-slate-450 hover:bg-slate-900/50'
+                      } disabled:opacity-55 disabled:cursor-not-allowed`}
+                    >
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <span className="text-base">💎</span>
+                        <span className="text-xs font-bold uppercase tracking-wider font-mono">High Yield</span>
+                        {lobby.highYieldResources && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400"></span>}
+                      </div>
+                      <p className="text-[9px] text-slate-400 leading-normal font-sans">
+                        Enhances raw system resource extraction (Credits, Alloys, Energy) to harvest <span className="text-yellow-400 font-bold font-mono">1.5x</span> yields.
+                      </p>
+                    </button>
+
+                    {/* Superweapons */}
+                    <button
+                      disabled={!isHost}
+                      onClick={() => sendMessage({ 
+                        type: 'update_lobby_setting', 
+                        payload: { key: 'superweaponsEnabled', value: !lobby.superweaponsEnabled } 
+                      })}
+                      className={`flex flex-col items-start text-left p-3 rounded-xl border transition cursor-pointer select-none ${
+                        lobby.superweaponsEnabled
+                          ? 'bg-rose-950/20 border-rose-500/30 text-slate-200'
+                          : 'bg-slate-900/35 border-slate-900 text-slate-400 hover:bg-slate-900/50'
+                      } disabled:opacity-55 disabled:cursor-not-allowed`}
+                    >
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <span className="text-base">🪐</span>
+                        <span className="text-xs font-bold uppercase tracking-wider font-mono">Superweapons</span>
+                        {lobby.superweaponsEnabled && <span className="w-1.5 h-1.5 rounded-full bg-rose-400"></span>}
+                      </div>
+                      <p className="text-[9px] text-slate-400 leading-normal font-sans">
+                        Allows construction and discharge of ultra-destructive Level 3 Planet Breaker lasers to completely fracture star system garrisons.
+                      </p>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
               {/* Chat Interface */}
               <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3 flex items-center gap-1.5">
                 <MessageSquare className="w-4 h-4 text-indigo-400" />
@@ -1172,22 +1261,53 @@ export default function App() {
                   onLaunchFleet={handleLaunchFleet}
                   selectedPlanetId={selectedPlanetId}
                   onSelectPlanet={setSelectedPlanetId}
+                  selectedPlanetIds={selectedPlanetIds}
+                  onSelectPlanets={setSelectedPlanetIds}
                   isTargetingWeapon={isTargetingWeapon}
-                  onFireWeapon={(targetPlanetId) => {
-                    if (selectedPlanetId) {
-                      sendMessage({
-                        type: 'fire_laser',
-                        payload: {
-                          fromPlanetId: selectedPlanetId,
-                          toPlanetId: targetPlanetId,
-                        }
-                      });
+                  onFireWeapon={(targetPlanetId, laserType) => {
+                    // Smart resolve: find candidates owned by the player with active laser battery
+                    const myLaserPlanets = lobby.planets.filter(
+                      (p) => p.ownerId === playerId && p.hasLaser && !p.isDestroyed
+                    );
+                    const candidates = myLaserPlanets.filter((p) => {
+                      const lvl = p.laserLevel || 1;
+                      if (laserType === 'breaker') return lvl === 3;
+                      return lvl >= 1;
+                    });
+
+                    if (candidates.length === 0) {
+                      setErrorMsg(laserType === 'breaker' ? 'No operational Level 3 Planet Breakers online.' : 'No operational laser batteries online.');
+                      setIsTargetingWeapon(null);
+                      return;
                     }
-                    setIsTargetingWeapon(false);
+
+                    // Resolve target planet and find the closest candidates
+                    const targetPlanet = lobby.planets.find(p => p.id === targetPlanetId);
+                    if (!targetPlanet) return;
+
+                    const getDistance = (p1: any, p2: any) => {
+                      const dx = p1.x - p2.x;
+                      const dy = p1.y - p2.y;
+                      return Math.sqrt(dx * dx + dy * dy);
+                    };
+
+                    const sorted = [...candidates].sort((a, b) => getDistance(a, targetPlanet) - getDistance(b, targetPlanet));
+                    const originPlanet = sorted[0];
+
+                    sendMessage({
+                      type: 'fire_laser',
+                      payload: {
+                        fromPlanetId: originPlanet.id,
+                        toPlanetId: targetPlanetId,
+                        laserType: laserType
+                      }
+                    });
+                    setIsTargetingWeapon(null);
                   }}
                   mapWidth={lobby.mapWidth}
                   mapHeight={lobby.mapHeight}
                   activeLasers={lobby.activeLasers}
+                  hazards={lobby.hazards}
                 />
 
                 {/* Game Over Modal Overlay */}
@@ -1337,8 +1457,143 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Tactical Weapons Console (Built-In Quick Actions) */}
+              {lobby && (() => {
+                const myCredits = selfPlayer ? selfPlayer.credits : 0;
+                const myLaserPlanets = lobby.planets.filter(
+                  (p) => p.ownerId === playerId && p.hasLaser && !p.isDestroyed
+                );
+                if (myLaserPlanets.length === 0) return null;
+
+                const hasStandard = myLaserPlanets.some(p => (p.laserLevel || 1) >= 1);
+                const hasBreaker = myLaserPlanets.some(p => (p.laserLevel || 1) === 3);
+
+                return (
+                  <div className="bg-rose-950/10 border border-rose-900/30 rounded-xl p-3 flex flex-col gap-2">
+                    <div className="flex items-center justify-between pb-1.5 border-b border-rose-900/40">
+                      <div className="flex items-center gap-1.5">
+                        <Target className="w-3.5 h-3.5 text-rose-500 animate-pulse" />
+                        <h4 className="text-[10px] font-bold uppercase tracking-wider text-rose-400">Tactical Weapons Console</h4>
+                      </div>
+                      <span className="text-[8px] text-rose-400 font-mono font-bold bg-rose-950/40 px-1.5 py-0.2 rounded border border-rose-900/30">
+                        {myLaserPlanets.length} Online
+                      </span>
+                    </div>
+
+                    <p className="text-[8.5px] text-slate-400 leading-normal font-sans">
+                      Click a fire mode, then select any target planet on the map to strike!
+                    </p>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      {/* Standard Laser Strike Button */}
+                      <button
+                        onClick={() => {
+                          setIsTargetingWeapon(isTargetingWeapon === 'standard' ? null : 'standard');
+                        }}
+                        disabled={myCredits < 1000}
+                        className={`py-1.5 px-2 rounded-lg border text-center flex flex-col items-center justify-center transition-all ${
+                          isTargetingWeapon === 'standard'
+                            ? 'bg-rose-500 border-rose-400 text-white shadow-lg shadow-rose-500/20'
+                            : myCredits < 1000
+                            ? 'bg-slate-900/40 border-slate-950 text-slate-600 cursor-not-allowed'
+                            : 'bg-rose-950/20 border-rose-900/30 text-rose-300 hover:bg-rose-950/40'
+                        }`}
+                      >
+                        <span className="text-[9px] font-bold flex items-center gap-1"><Zap className="w-2.5 h-2.5" /> Laser Strike</span>
+                        <span className="text-[8px] font-mono text-slate-400 mt-0.5">1,000 CR</span>
+                      </button>
+
+                      {/* Planet Breaker Strike Button (unlocked at lvl 3) */}
+                      {hasBreaker ? (
+                        <button
+                          onClick={() => {
+                            setIsTargetingWeapon(isTargetingWeapon === 'breaker' ? null : 'breaker');
+                          }}
+                          disabled={myCredits < 3000}
+                          className={`py-1.5 px-2 rounded-lg border text-center flex flex-col items-center justify-center transition-all ${
+                            isTargetingWeapon === 'breaker'
+                              ? 'bg-amber-500 border-amber-400 text-slate-950 font-bold shadow-lg shadow-amber-500/25'
+                              : myCredits < 3000
+                              ? 'bg-slate-900/40 border-slate-950 text-slate-600 cursor-not-allowed'
+                              : 'bg-amber-950/20 border-amber-900/30 text-amber-400 hover:bg-amber-950/40 animate-pulse'
+                          }`}
+                        >
+                          <span className="text-[9px] font-bold flex items-center gap-1"><Flame className="w-2.5 h-2.5" /> Breaker</span>
+                          <span className="text-[8px] font-mono text-slate-400 mt-0.5">3,000 CR</span>
+                        </button>
+                      ) : (
+                        <div className="flex flex-col items-center justify-center p-1.5 bg-slate-950/40 border border-slate-900/40 rounded-lg text-[8px] text-slate-500 text-center font-mono italic">
+                          Breaker Locked (Lvl 3 Laser)
+                        </div>
+                      )}
+                    </div>
+
+                    {isTargetingWeapon && (
+                      <div className="text-[8px] p-1 bg-slate-950/60 border border-rose-900/30 rounded text-rose-400 font-mono flex items-center justify-center gap-1 animate-pulse">
+                        <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-ping" />
+                        <span>TARGET ACTIVE: SELECT PLANET ON MAP</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
               {/* Selected Planet Control Panel / Fleet Upgrades Swap */}
-              {selectedPlanetId ? (() => {
+              {selectedPlanetIds.length > 1 ? (() => {
+                // Find all selected planets
+                const selPlanets = lobby.planets.filter(p => selectedPlanetIds.includes(p.id));
+                const mySelPlanets = selPlanets.filter(p => p.ownerId === playerId && !p.isDestroyed);
+                const totalShips = mySelPlanets.reduce((sum, p) => sum + Math.floor(p.ships || 0), 0);
+
+                return (
+                  <div className="bg-slate-900/20 border border-indigo-900/40 rounded-xl p-3.5 flex flex-col gap-3">
+                    <div className="flex items-center justify-between pb-2 border-b border-indigo-950">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-sm">🌌</span>
+                        <h4 className="text-xs font-bold text-white uppercase tracking-wider">Fleet Command Group</h4>
+                      </div>
+                      <span className="text-[9px] text-indigo-400 font-mono font-bold bg-indigo-950/40 px-2 py-0.5 rounded border border-indigo-900/30">
+                        {mySelPlanets.length} Systems Selected
+                      </span>
+                    </div>
+
+                    <p className="text-[9.5px] text-slate-400 leading-normal font-sans">
+                      You have selected multiple systems under your command. You can give simultaneous movement and attack orders.
+                    </p>
+
+                    {/* Selection List */}
+                    <div className="flex flex-col gap-1.5 max-h-[120px] overflow-y-auto pr-1">
+                      {mySelPlanets.map((p) => (
+                        <div key={p.id} className="flex justify-between items-center p-1.5 bg-slate-950/40 rounded border border-slate-900 font-mono text-[9px]">
+                          <span className="text-slate-300 font-sans font-medium">🪐 {p.name}</span>
+                          <span className="text-emerald-400">{Math.floor(p.ships || 0)} ships</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Total Stats */}
+                    <div className="p-2.5 bg-slate-950/60 rounded-lg border border-slate-900 flex justify-between items-center text-[10px]">
+                      <span className="text-slate-400">Total Combat Force:</span>
+                      <span className="font-mono font-bold text-indigo-400">{totalShips} Fleets Ready</span>
+                    </div>
+
+                    {/* Help Instruction */}
+                    <div className="text-[9px] p-2 bg-indigo-950/10 border border-indigo-900/20 rounded-lg text-indigo-300 leading-relaxed font-sans">
+                      💡 <strong>How to issue orders:</strong> Click on any target planet on the map, or drag from any selected planet to a destination, to dispatch fleets from <strong>all {mySelPlanets.length} selected systems</strong> simultaneously at the current launch dispatch percentage ({launchPercent}%).
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        setSelectedPlanetIds([]);
+                        setSelectedPlanetId(null);
+                      }}
+                      className="w-full py-1.5 text-[10px] font-bold font-mono rounded border border-slate-800 bg-slate-900/60 hover:bg-slate-900 text-slate-400"
+                    >
+                      CLEAR SELECTION GROUP
+                    </button>
+                  </div>
+                );
+              })() : selectedPlanetId ? (() => {
                 const selPlanet = lobby.planets.find(p => p.id === selectedPlanetId);
                 if (!selPlanet) return null;
                 const isMyPlanet = selPlanet.ownerId === playerId;
@@ -1353,8 +1608,8 @@ export default function App() {
                   (p) => p.ownerId === playerId && p.hasLaser && !p.isDestroyed
                 );
 
-                // Closest standard laser (Level 1 or 2)
-                const standardLaserCandidates = myLaserPlanets.filter((p) => (p.laserLevel || 1) < 3);
+                // Closest standard laser (Level 1, 2, or 3)
+                const standardLaserCandidates = myLaserPlanets.filter((p) => (p.laserLevel || 1) >= 1);
                 const closestLaserPlanet = standardLaserCandidates.length > 0 
                   ? [...standardLaserCandidates].sort((a, b) => getDistance(a, selPlanet) - getDistance(b, selPlanet))[0]
                   : null;
@@ -1671,7 +1926,8 @@ export default function App() {
                                             type: 'fire_laser',
                                             payload: {
                                               fromPlanetId: closestLaserPlanet.id,
-                                              toPlanetId: selPlanet.id
+                                              toPlanetId: selPlanet.id,
+                                              laserType: 'standard'
                                             }
                                           });
                                         }}
@@ -1700,8 +1956,7 @@ export default function App() {
                                   const elapsed = Date.now() - lastFired;
                                   const isReady = elapsed > cooldown;
                                   const remaining = Math.ceil((cooldown - elapsed) / 1000);
-                                  const uses = closestPlanetBreakerPlanet.planetBreakerUses || 0;
-                                  const cost = 4000 + uses * 2000;
+                                  const cost = 3000;
                                   const canAfford = myCredits >= cost;
                                   const distLightYears = Math.round(getDistance(closestPlanetBreakerPlanet, selPlanet) * 0.1);
 
@@ -1726,7 +1981,8 @@ export default function App() {
                                             type: 'fire_laser',
                                             payload: {
                                               fromPlanetId: closestPlanetBreakerPlanet.id,
-                                              toPlanetId: selPlanet.id
+                                              toPlanetId: selPlanet.id,
+                                              laserType: 'breaker'
                                             }
                                           });
                                         }}
@@ -1817,13 +2073,7 @@ export default function App() {
                         }
                         
                         return (
-                          <div className="relative group flex flex-col gap-1 p-1.5 bg-slate-900/40 rounded-lg border border-slate-900/50 hover:bg-slate-900/70 transition-all">
-                            {/* Tooltip */}
-                            <div className="absolute right-full mr-3 top-1/2 -translate-y-1/2 hidden group-hover:flex flex-col w-56 p-2.5 bg-slate-950/95 border border-slate-800 text-[10px] text-slate-300 rounded-lg shadow-xl pointer-events-none z-30 leading-normal font-sans">
-                              <span className={`font-bold mb-1 text-[11px] ${colorClass}`}>{tooltipTitle}</span>
-                              <span>{tooltipText}</span>
-                            </div>
-                            
+                          <div className="relative group flex flex-col gap-1 p-2 bg-slate-900/40 rounded-lg border border-slate-900/50 hover:bg-slate-900/70 transition-all">
                             <div className="flex items-center justify-between gap-2 min-w-0">
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-200">
@@ -1859,6 +2109,14 @@ export default function App() {
                               >
                                 {buttonContent}
                               </button>
+                            </div>
+
+                            {/* Expandable description on hover */}
+                            <div className="max-h-0 overflow-hidden group-hover:max-h-24 transition-all duration-300 ease-in-out">
+                              <div className="text-[9px] text-slate-400 font-sans leading-normal pt-1.5 border-t border-slate-850 mt-1.5 flex flex-col gap-0.5">
+                                <span className={`font-bold text-[9.5px] ${colorClass}`}>{tooltipTitle}</span>
+                                <span>{tooltipText}</span>
+                              </div>
                             </div>
                             
                             {/* Research progress line */}
@@ -1897,11 +2155,11 @@ export default function App() {
                           {renderCard(
                             'defense',
                             <Shield className="w-3 h-3 text-indigo-400 flex-shrink-0" />,
-                            'Shields',
+                            'Fortifications',
                             'text-indigo-400',
                             'bg-indigo-500 shadow-indigo-500/50',
-                            '🛡️ Planetary Shields',
-                            'Increases system defense garrison multiplier by +10% per level. Makes your planets significantly harder to siege and capture.'
+                            '🛡️ Planetary Fortifications',
+                            'Increases planetary defense garrison multiplier by +10% per level. Makes your systems significantly stronger against enemy sieges and invasion.'
                           )}
                           {renderCard(
                             'sensors',
@@ -1937,52 +2195,7 @@ export default function App() {
                 </div>
               )}
 
-              {/* Tactical Comms (Chat) */}
-              <div className="flex-1 flex flex-col bg-slate-900/20 border border-slate-900 rounded-xl p-3 min-h-0">
-                <h4 className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-1.5 flex items-center gap-1.5">
-                  <MessageSquare className="w-3.5 h-3.5 text-indigo-400" />
-                  Tactical Comms
-                </h4>
 
-                <div 
-                  ref={gameChatContainerRef}
-                  className="flex-1 min-h-0 overflow-y-auto bg-slate-950/40 border border-slate-950 rounded-lg p-2 space-y-1 mb-2 font-sans"
-                >
-                  {lobby.chat.slice(-15).map((msg) => {
-                    const sender = lobby.players.find((p) => p.id === msg.senderId);
-                    return (
-                      <div key={msg.id} className="text-[10px] flex items-start gap-1 leading-relaxed">
-                        {sender?.emoji && <span className="text-xs flex-shrink-0">{sender.emoji}</span>}
-                        <span 
-                          className="font-semibold flex-shrink-0"
-                          style={{ color: msg.senderColor }}
-                        >
-                          {msg.senderName}:
-                        </span>
-                        <span className="text-slate-300 break-all">{msg.text}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                <form onSubmit={handleSendChat} className="flex gap-1">
-                  <input
-                    type="text"
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value.slice(0, 60))}
-                    placeholder="Coordinate with sector..."
-                    className="flex-1 px-2.5 py-1.5 rounded-lg border border-slate-800 bg-slate-900/50 text-[10px] text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500"
-                    maxLength={60}
-                    id="comms-message-input"
-                  />
-                  <button
-                    type="submit"
-                    className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 font-semibold text-[10px] text-white rounded-lg transition"
-                  >
-                    Send
-                  </button>
-                </form>
-              </div>
 
             </div>
           </div>

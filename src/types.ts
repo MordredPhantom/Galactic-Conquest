@@ -163,6 +163,16 @@ export interface ActiveLaserEffect {
   type: 'standard' | 'breaker';
   color: string;
   isShieldBlocked?: boolean;
+  impactDelay?: number;
+  damage?: number;
+  impactProcessed?: boolean;
+  firingPlayerId?: string;
+  fromX?: number;
+  fromY?: number;
+  fromSize?: number;
+  toX?: number;
+  toY?: number;
+  toSize?: number;
 }
 
 export interface Lobby {
@@ -185,6 +195,21 @@ export interface Lobby {
   mapHeight: number;
   minorFactionsCount?: number;
   activeLasers?: ActiveLaserEffect[];
+  hazardsCount?: number;
+  hazards?: SpaceHazard[];
+  hyperGrowthEnabled?: boolean;
+  superweaponsEnabled?: boolean;
+  highYieldResources?: boolean;
+}
+
+export interface SpaceHazard {
+  id: string;
+  type: 'black_hole' | 'ion_storm' | 'asteroid_belt' | 'nebula';
+  name: string;
+  x: number;
+  y: number;
+  radius: number;
+  effect: string;
 }
 
 // Simple structures for leaderboard persistence
@@ -209,12 +234,13 @@ export type ClientMessage =
   | { type: 'leave_lobby' }
   | { type: 'update_map_size'; payload: { size: 'small' | 'medium' | 'large' | 'giant' | 'cosmic' } }
   | { type: 'update_minor_factions'; payload: { count: number } }
+  | { type: 'update_lobby_setting'; payload: { setting: 'hazardsCount' | 'hyperGrowthEnabled' | 'superweaponsEnabled' | 'highYieldResources'; value: any } }
   | { type: 'build_building'; payload: { planetId: string; buildingType: 'city' | 'starport' | 'spaceWeapon' | 'shield' } }
   | { type: 'fire_space_weapon'; payload: { fromPlanetId: string; toPlanetId: string } }
   | { type: 'build_laser'; payload: { planetId: string } }
   | { type: 'upgrade_laser'; payload: { planetId: string } }
   | { type: 'build_shield'; payload: { planetId: string } }
-  | { type: 'fire_laser'; payload: { fromPlanetId: string; toPlanetId: string } };
+  | { type: 'fire_laser'; payload: { fromPlanetId: string; toPlanetId: string; laserType?: 'standard' | 'breaker' } };
 
 export type ServerMessage =
   | { type: 'lobby_update'; payload: { lobby: Lobby } }
